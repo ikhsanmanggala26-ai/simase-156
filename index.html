@@ -6461,9 +6461,7 @@
       }
     });
   </script>
-
-<!-- ===================================================================== -->
-<!-- ADD-ON: KAMERA LANGSUNG + TIMESTAMP + LOKASI GEDUNG + KUSTOM LOGO    -->
+<!-- ADD-ON V2 (ANTI-HANG): KAMERA LANGSUNG + TIMESTAMP + LOKASI + LOGO     -->
 <!-- Tempelkan blok ini tepat sebelum </body> tanpa mengubah kode lama     -->
 <!-- ===================================================================== -->
 <style>
@@ -6601,10 +6599,12 @@
 
 <script>
 (function () {
+  if (window.__SIMASE_CAM_LOADED__) return;
+  window.__SIMASE_CAM_LOADED__ = true;
+
   const LOGO_STORAGE_KEY = 'simase_custom_school_logo_156_v1';
   const SCHOOL_DEFAULT_ADDRESS = 'SMP Negeri 156 Jakarta — Jl. Kramat Pulo Gundul III No.4, Johar Baru, Jakarta Pusat';
 
-  // Emblem Default SMPN 156 Jakarta (SVG Data URI crisp jika belum upload logo kustom)
   const DEFAULT_SCHOOL_LOGO = 'data:image/svg+xml;utf8,' + encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">' +
     '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">' +
@@ -6617,18 +6617,30 @@
     '</svg>'
   );
 
+  let savedLogo = '';
+  try {
+    savedLogo = localStorage.getItem(LOGO_STORAGE_KEY) || '';
+  } catch (_) {}
+
   const state = {
     stream: null,
     facingMode: 'environment',
-    activeTarget: 'aset', // 'aset' | 'persediaan'
+    activeTarget: 'aset',
     clockTimer: null,
-    watchId: null,
-    coords: null, // { lat, lng, accuracy }
+    coords: null,
     realtimePlace: SCHOOL_DEFAULT_ADDRESS,
     buildingName: 'Gedung Utama SMP Negeri 156 Jakarta',
-    customLogo: localStorage.getItem(LOGO_STORAGE_KEY) || '',
+    customLogo: savedLogo,
     logoImgObj: null
   };
+
+  function safeRenderIcons() {
+    if (window.lucide && typeof window.lucide.createIcons === 'function') {
+      try {
+        window.lucide.createIcons();
+      } catch (_) {}
+    }
+  }
 
   function preloadLogoImage() {
     const src = state.customLogo || DEFAULT_SCHOOL_LOGO;
@@ -6717,10 +6729,15 @@
         };
         syncHudText();
 
-        // Reverse Geocoding nama gedung / jalan realtime (non-blocking)
         try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 5000);
           const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${state.coords.lat}&lon=${state.coords.lng}&zoom=18&addressdetails=1`;
-          const res = await fetch(url, { headers: { 'Accept-Language': 'id' } });
+          const res = await fetch(url, {
+            headers: { 'Accept-Language': 'id' },
+            signal: controller.signal
+          });
+          clearTimeout(timer);
           if (res.ok) {
             const data = await res.json();
             const addr = data.address || {};
@@ -6734,9 +6751,7 @@
               syncHudText();
             }
           }
-        } catch (_) {
-          // Tetap gunakan alamat resmi sekolah + koordinat GPS jika offline
-        }
+        } catch (_) {}
 
         if (forceNotify && typeof window.showToast === 'function') {
           window.showToast('Lokasi GPS & gedung realtime diperbarui.', 'success');
@@ -6749,7 +6764,7 @@
           window.showToast('GPS tidak diizinkan, menggunakan lokasi gedung sekolah.', 'warning');
         }
       },
-      { enableHighAccuracy: true, timeout: 8000, maximumAge: 10000 }
+      { enableHighAccuracy: true, timeout: 6000, maximumAge: 15000 }
     );
   }
 
@@ -6766,11 +6781,6 @@
     if (tsEl) tsEl.textContent = formatTimestampIndonesia(new Date());
     if (bldEl) bldEl.textContent = `Gedung/Lokasi: ${state.buildingName}`;
     if (gpsEl) gpsEl.textContent = formatGpsLine();
-
-    // Update badge lokasi realtime di kedua form
-    document.querySelectorAll('.simase-form-location-badge').forEach(el => {
-      el.textContent = state.buildingName;
-    });
   }
 
   function applyBuildingPreset(val) {
@@ -6804,7 +6814,6 @@
     if (statusText) statusText.textContent = 'Mengaktifkan kamera langsung...';
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      // Fallback otomatis untuk mode file:// atau non-HTTPS
       closeCameraModal();
       const fallbackInput = document.getElementById('simaseNativeCameraFallbackInput');
       if (fallbackInput) {
@@ -6830,8 +6839,7 @@
       video.srcObject = stream;
       await video.play();
       if (statusOverlay) statusOverlay.classList.add('hidden');
-    } catch (err) {
-      // Jika izin/HTTPS diblokir, alihkan mulus ke kamera native HP dengan timestamp
+    } catch (_) {
       closeCameraModal();
       const fallbackInput = document.getElementById('simaseNativeCameraFallbackInput');
       if (fallbackInput) {
@@ -6870,7 +6878,6 @@
     if (state.clockTimer) clearInterval(state.clockTimer);
     state.clockTimer = setInterval(syncHudText, 1000);
 
-    if (window.lucide) window.lucide.createIcons();
     startCameraStream();
   }
 
@@ -6885,7 +6892,6 @@
     startCameraStream();
   }
 
-  // Render foto + Timestamp + Lokasi Realtime Gedung/Bangunan + Logo Sekolah Kustom ke Canvas
   function renderStampedDataUrl(sourceDrawable, srcWidth, srcHeight) {
     const maxW = 1280;
     const scale = srcWidth > maxW ? (maxW / srcWidth) : 1;
@@ -6897,15 +6903,12 @@
     canvas.height = h;
     const ctx = canvas.getContext('2d');
 
-    // 1. Gambar frame foto utama
     ctx.drawImage(sourceDrawable, 0, 0, w, h);
 
-    // 2. Hitung ukuran proporsional banner timestamp di bagian bawah foto
     const pad = Math.max(14, Math.round(w * 0.018));
     const bannerH = Math.max(96, Math.round(h * 0.175));
     const bannerY = h - bannerH;
 
-    // Latar gradasi gelap transparan agar teks & logo sangat kontras
     const grad = ctx.createLinearGradient(0, bannerY - 24, 0, h);
     grad.addColorStop(0, 'rgba(2, 6, 23, 0)');
     grad.addColorStop(0.22, 'rgba(2, 6, 23, 0.78)');
@@ -6913,11 +6916,9 @@
     ctx.fillStyle = grad;
     ctx.fillRect(0, bannerY - 24, w, bannerH + 24);
 
-    // Garis aksen hijau emerald di atas banner
     ctx.fillStyle = '#10b981';
     ctx.fillRect(pad, bannerY + 4, w - pad * 2, Math.max(2, Math.round(h * 0.003)));
 
-    // 3. Gambar Kotak Logo Sekolah (Kustom atau Default)
     const logoBoxSize = Math.round(bannerH - pad * 1.45);
     const logoX = pad;
     const logoY = bannerY + Math.round((bannerH - logoBoxSize) / 2) + 3;
@@ -6944,7 +6945,6 @@
     }
     ctx.restore();
 
-    // 4. Tulis Teks Timestamp & Lokasi Realtime Gedung/Bangunan
     const textX = logoX + logoBoxSize + Math.round(pad * 0.9);
     const maxTextW = w - textX - pad;
 
@@ -6979,7 +6979,6 @@
     ctx.fillStyle = '#e2e8f0';
     ctx.fillText(gpsStr, textX, curY, maxTextW);
 
-    // Export WebP HD (fallback JPEG)
     let dataUrl = canvas.toDataURL('image/webp', 0.86);
     if (!dataUrl.startsWith('data:image/webp')) {
       dataUrl = canvas.toDataURL('image/jpeg', 0.88);
@@ -6993,16 +6992,12 @@
     if (state.activeTarget === 'aset') {
       const preview = document.getElementById('assetPhotoPreview');
       const badge = document.getElementById('assetCompressionBadge');
-      if (preview) {
-        preview.src = dataUrl;
-        preview.dispatchEvent(new Event('change', { bubbles: true }));
-      }
+      if (preview) preview.src = dataUrl;
       if (badge) {
         badge.textContent = `Kamera Timestamp + Logo (${approxKb} KB)`;
         badge.classList.remove('hidden');
       }
     } else {
-      // Target: Form Tambah Barang Persediaan
       const preview =
         document.getElementById('consumablePhotoPreview') ||
         document.querySelector('#consumableModal img[id*="Preview"], #consumableForm img[id*="Preview"]');
@@ -7013,7 +7008,6 @@
       if (preview) {
         preview.src = dataUrl;
         preview.classList.remove('hidden');
-        preview.dispatchEvent(new Event('change', { bubbles: true }));
       }
       if (badge) {
         badge.textContent = `Kamera Timestamp + Logo (${approxKb} KB)`;
@@ -7068,7 +7062,6 @@
     reader.onload = function (e) {
       const img = new Image();
       img.onload = function () {
-        // Resize logo secara rapi ke maks 256x256 PNG transparan agar ringan di localStorage
         const maxDim = 256;
         const ratio = Math.min(maxDim / img.width, maxDim / img.height, 1);
         const w = Math.round(img.width * ratio);
@@ -7097,7 +7090,9 @@
 
   function resetCustomLogo() {
     state.customLogo = '';
-    localStorage.removeItem(LOGO_STORAGE_KEY);
+    try {
+      localStorage.removeItem(LOGO_STORAGE_KEY);
+    } catch (_) {}
     preloadLogoImage();
     if (typeof window.showToast === 'function') {
       window.showToast('Logo dikembalikan ke emblem default SMPN 156 Jakarta.', 'info');
@@ -7142,13 +7137,15 @@
   }
 
   function injectToolbarsIntoForms() {
-    // 1. Form Registrasi Aset Tetap Baru (#assetModal)
+    let added = false;
+
+    // 1. Form Registrasi Aset Tetap Baru
     const assetPhotoInput = document.getElementById('assetPhotoInput');
     if (assetPhotoInput && assetPhotoInput.parentElement && !assetPhotoInput.parentElement.querySelector('.simase-camera-toolbar')) {
       assetPhotoInput.parentElement.appendChild(createToolbarElement('aset'));
+      added = true;
     }
 
-    // Sinkronkan otomatis perubahan dropdown Ruangan (KIR) pada form aset
     const assetRuangan = document.getElementById('assetRuangan');
     if (assetRuangan && !assetRuangan.dataset.simaseBound) {
       assetRuangan.dataset.simaseBound = '1';
@@ -7158,7 +7155,7 @@
       });
     }
 
-    // 2. Form Tambah Barang Persediaan (#consumableModal / #consumableForm)
+    // 2. Form Tambah Barang Persediaan
     const consumableModal = document.getElementById('consumableModal') || document.getElementById('consumableForm');
     if (consumableModal && !consumableModal.querySelector('.simase-camera-toolbar')) {
       const existingFileInput =
@@ -7167,8 +7164,8 @@
 
       if (existingFileInput && existingFileInput.parentElement) {
         existingFileInput.parentElement.appendChild(createToolbarElement('persediaan'));
+        added = true;
       } else {
-        // Jika form persediaan belum memiliki kotak upload foto, sisipkan blok foto + kamera langsung secara rapi sebelum tombol submit
         const formEl = consumableModal.tagName === 'FORM' ? consumableModal : consumableModal.querySelector('form');
         if (formEl) {
           const photoBox = document.createElement('div');
@@ -7193,12 +7190,15 @@
           } else {
             formEl.appendChild(photoBox);
           }
+          added = true;
         }
       }
     }
 
     preloadLogoImage();
-    if (window.lucide) window.lucide.createIcons();
+    if (added) {
+      safeRenderIcons();
+    }
   }
 
   window.SIMASE_CAM = {
@@ -7215,24 +7215,25 @@
     syncHudText
   };
 
-  function init() {
+  function bootstrap() {
     injectToolbarsIntoForms();
-    refreshRealtimeLocation(false);
-
-    // Pantau perubahan DOM jika modal dirender dinamis
-    const observer = new MutationObserver(function () {
-      injectToolbarsIntoForms();
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
+    safeRenderIcons();
+    // Cadangan 1 kali saat tombol pembuka modal diklik (tanpa MutationObserver)
+    document.addEventListener('click', function (e) {
+      if (e.target && e.target.closest('button')) {
+        injectToolbarsIntoForms();
+      }
+    }, { passive: true });
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', bootstrap);
   } else {
-    init();
+    bootstrap();
   }
 })();
 </script>
+
 
 </body>
 </html>
